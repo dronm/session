@@ -1,0 +1,5 @@
+~*
+/redis/auth.txt
+/pg/auth.txt
+go.mod
+go.sum
