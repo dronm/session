@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/dronm/session"
-
 	"github.com/redis/go-redis/v9"
 )
 
@@ -210,6 +209,9 @@ func (pder *Provider) SetMaxIdleTime(maxIdleTime int64) {
 
 func (pder *Provider) GetMaxIdleTime() int64 {
 	return pder.maxIdleTime
+}
+
+func (pder *Provider) CloseProvider() {
 }
 
 // InitProvider initializes postgresql provider.

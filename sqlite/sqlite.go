@@ -1,21 +1,20 @@
-// Package pg contains postgresql session provider based on jackc connection to PG.
+// Package sqlite contains postgresql session provider based on jackc connection to PG.
 // Requirements:
 //
-//	jackc connection to PG Sql https://github.com/jackc/pgx
-//	PG_CRYPTO extension must be installed CREATE EXTENSION pgrypto, PGP_SYM_DECRYPT, PGP_SYM_ENCRYPT functions are used,
-//	If encryption is not necessary - correct sql in SessionRead/SessionClose functions
-//	Some SQL scripts are nesessary:
-//		session_vals.sql contains table for holding session values
-//		session_vals_process.sql trigger function for updating login information (logins table must be present in database)
-//		session_vals_trigger.sql creating trigger script
+//	 Sqlite connection github.com/mattn/go-sqlite3
+//		Some SQL scripts are nesessary:
+//			session_vals.sql contains table for holding session values
+//			session_vals_process.sql trigger function for updating login information (logins table must be present in database)
+//			session_vals_trigger.sql creating trigger script
 //
 // Internally gob encoder is used for data serialization. Session data is read at start and kept in memory SessionStore structure.
 // Session key-value pares are kept in storeValue type.
-package pg
+package sqlite
 
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -25,8 +24,7 @@ import (
 	"time"
 
 	"github.com/dronm/session"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var EKeyNotFound = errors.New("key not found")
@@ -35,9 +33,9 @@ var EValMustBePtr = errors.New("value must be of type ptr")
 // Session key ID length. As it is stored it pg data base in varchar column its length is limited.
 const SESS_ID_LEN = 36
 
-const PROVIDER = "pg"
+const PROVIDER = "sqlite3"
 
-const LOG_PREF = "pg provider:"
+const LOG_PREF = "sqlite provider:"
 
 // pder holds pointer to Provider struct.
 var pder = &Provider{}
@@ -98,27 +96,22 @@ func (st *SessionStore) Flush() error {
 		if err != nil {
 			return err
 		}
-		conn, err := pder.dbpool.Acquire(context.Background())
-		if err != nil {
-			return err
-		}
-		defer conn.Release()
 
-		if _, err = conn.Exec(context.Background(),
+		st.mx.Lock()
+		defer st.mx.Unlock()
+
+		if _, err = pder.dbConn.ExecContext(context.Background(),
 			`UPDATE session_vals
 			SET
-				val = pgp_sym_encrypt_bytea($1, $2),
-				accessed_time = now()
-			WHERE id = $3`,
+				val = $1,
+				accessed_time = datetime()
+			WHERE id = $2`,
 			val,
-			pder.encrkey,
 			st.sid,
 		); err != nil {
 			return err
 		}
-		st.mx.Lock()
 		st.valueModified = false
-		st.mx.Unlock()
 	}
 
 	return nil
@@ -276,7 +269,7 @@ func (st *SessionStore) TimeAccessed() time.Time {
 
 // Provider structure holds provider information.
 type Provider struct {
-	dbpool      *pgxpool.Pool
+	dbConn      *sql.DB
 	encrkey     string
 	maxLifeTime int64
 	maxIdleTime int64
@@ -293,7 +286,7 @@ func (pder *Provider) NewSessionStore(sid string) *SessionStore {
 
 // SessionInit initializes session with given ID.
 func (pder *Provider) SessionInit(sid string) (session.Session, error) {
-	if pder.dbpool == nil {
+	if pder.dbConn == nil {
 		return nil, errors.New("Provider not initialized")
 	}
 
@@ -301,8 +294,8 @@ func (pder *Provider) SessionInit(sid string) (session.Session, error) {
 		return nil, errors.New("Session key length exceeded max value")
 	}
 
-	if _, err := pder.dbpool.Exec(context.Background(),
-		"INSERT INTO session_vals(id) VALUES($1) ON CONFLICT(id) DO NOTHING",
+	if _, err := pder.dbConn.ExecContext(context.Background(),
+		"INSERT OR IGNORE INTO session_vals(id) VALUES($1)",
 		sid,
 	); err != nil {
 		return nil, err
@@ -316,19 +309,19 @@ func (pder *Provider) SessionRead(sid string) (session.Session, error) {
 
 	store := pder.NewSessionStore(sid)
 
-	if err := pder.dbpool.QueryRow(context.Background(),
+	if err := pder.dbConn.QueryRowContext(context.Background(),
 		`UPDATE session_vals
 		SET
-			accessed_time = now()
+			accessed_time = datetime()
 		WHERE id = $1
 		RETURNING
 			accessed_time,
 			create_time,
-			pgp_sym_decrypt_bytea(val, $2)`,
-		sid, pder.encrkey).Scan(&store.timeAccessed,
+			val`,
+		sid).Scan(&store.timeAccessed,
 		&store.timeCreated,
 		&val,
-	); err != nil && err == pgx.ErrNoRows {
+	); err != nil && err == sql.ErrNoRows {
 		//no such session
 		return pder.SessionInit(sid)
 
@@ -363,8 +356,8 @@ func (pder *Provider) SessionGC(l io.Writer, logLev session.LogLevel) {
 
 	//inactive sessions
 	if pder.maxIdleTime > 0 {
-		if _, err := pder.dbpool.Exec(context.Background(),
-			fmt.Sprintf(`DELETE FROM session_vals WHERE accessed_time + ('%d seconds')::interval <= now()`, pder.maxIdleTime),
+		if _, err := pder.dbConn.ExecContext(context.Background(),
+			fmt.Sprintf(`DELETE FROM session_vals WHERE accessed_time + '%d seconds' <= datetime()`, pder.maxIdleTime),
 		); err != nil {
 			//log error
 			if l != nil {
@@ -374,8 +367,8 @@ func (pder *Provider) SessionGC(l io.Writer, logLev session.LogLevel) {
 	}
 
 	if pder.maxLifeTime > 0 {
-		if _, err := pder.dbpool.Exec(context.Background(),
-			fmt.Sprintf(`DELETE FROM session_vals WHERE create_time + ('%d seconds')::interval <= now()`, pder.maxLifeTime),
+		if _, err := pder.dbConn.ExecContext(context.Background(),
+			fmt.Sprintf(`DELETE FROM session_vals WHERE create_time + '%d seconds' <= datetime()`, pder.maxLifeTime),
 		); err != nil {
 			//log error
 			if l != nil {
@@ -386,7 +379,7 @@ func (pder *Provider) SessionGC(l io.Writer, logLev session.LogLevel) {
 }
 
 func (pder *Provider) DestroyAllSessions(l io.Writer, logLev session.LogLevel) {
-	if _, err := pder.dbpool.Exec(context.Background(), `DELETE FROM session_vals`); err != nil {
+	if _, err := pder.dbConn.ExecContext(context.Background(), `DELETE FROM session_vals`); err != nil {
 		if l != nil {
 			session.WriteToLog(l, fmt.Sprintf(LOG_PREF+"Exec() failed on DELETE FROM session_vals: %v", err), session.LOG_LEVEL_ERROR)
 		}
@@ -409,35 +402,33 @@ func (pder *Provider) GetMaxIdleTime() int64 {
 }
 
 // InitProvider initializes postgresql provider.
-// Function expects two parameters:
-//
-//	First parameter: *pgxpool.Pool
-//	Second parameter: encryptKey application unique,if to set no encryption used
+// Function expects one parameter: path to a database file.
+// This function opens connection.
 func (pder *Provider) InitProvider(provParams []interface{}) error {
-	if len(provParams) < 2 {
-		return errors.New("InitProvider missing parameters: *pgxpool.Pool, encryptKey")
+	if len(provParams) < 1 {
+		return errors.New("InitProvider missing parameters: path to a database file")
 	}
-	var ok bool
-	pder.dbpool, ok = provParams[0].(*pgxpool.Pool)
+	dbFileName, ok := provParams[0].(string)
 	if !ok {
-		return errors.New("InitProvider db connection parameter(0) must be of type *pgxpool.Pool")
+		return errors.New("InitProvider path to a database file must be a string")
 	}
 
-	pder.encrkey, ok = provParams[1].(string)
-	if !ok {
-		return errors.New("InitProvider encryptKey parameter(1) must be a string")
+	conn, err := sql.Open(PROVIDER, dbFileName)
+	if err != nil {
+		return fmt.Errorf("sql.Open failed: %v", err)
 	}
+	pder.dbConn = conn
 
 	return nil
 }
 
 // CloseProvider closes all database connections.
 func (pder *Provider) CloseProvider() {
-
+	pder.dbConn.Close()
 }
 
 func (pder *Provider) removeSessionFromDb(sid string) error {
-	if _, err := pder.dbpool.Exec(context.Background(), `DELETE FROM session_vals WHERE id = $1`, sid); err != nil {
+	if _, err := pder.dbConn.ExecContext(context.Background(), `DELETE FROM session_vals WHERE id = $1`, sid); err != nil {
 		return err
 	}
 	return nil

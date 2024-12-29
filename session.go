@@ -45,7 +45,7 @@ type Session interface {
 	GetFloat(key string) float64             //get float64 session value, 0.0 if no key or assertion error
 	Delete(key string) error                 //delete session value
 	SessionID() string                       //returns current sessionID
-	Flush() error				 //flushes data to persistent storage
+	Flush() error                            //flushes data to persistent storage
 	TimeCreated() time.Time
 	TimeAccessed() time.Time
 }
@@ -53,6 +53,7 @@ type Session interface {
 // Provider interface for session provider.
 type Provider interface {
 	InitProvider(provParams []interface{}) error
+	CloseProvider()
 	SessionInit(sid string) (Session, error)
 	SessionRead(sid string) (Session, error)
 	SessionDestroy(sid string) error
@@ -166,6 +167,11 @@ func (manager *Manager) SessionClose(sid string) error {
 // Should consult specific provider package to know its parameters.
 func (manager *Manager) InitProvider(provParams []interface{}) error {
 	return manager.provider.InitProvider(provParams)
+}
+
+// InitProvider initializes provider with its specific parameters.
+func (manager *Manager) CloseProvider() {
+	manager.provider.CloseProvider()
 }
 
 // SessionDestroy destroys session by its ID.

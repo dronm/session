@@ -2,21 +2,21 @@
 package pg
 
 import (
+	"context"
+	"database/sql"
 	"encoding/gob"
 	"os"
 	"reflect"
 	"testing"
 	"time"
-	"context"
 
 	"github.com/dronm/session" //session manager
-	
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
 	//pg connection in the following format - postgres://username:password@HOST:PORT/database_name
-	ENV_PG_CONN      = "PG_CONN"
+	ENV_PG_CONN = "PG_CONN"
 )
 
 func getTestVar(t *testing.T, n string) string {
@@ -42,7 +42,7 @@ func NewTestValues() map[string]interface{} {
 	//Register custom struct for marshaling.
 	gob.Register(TestStruct{})
 	gob.Register(time.Time{})
-	
+
 	return map[string]interface{}{
 		"stringVal":  "some string value",
 		"int32Val":   int32(2147483647),
@@ -51,7 +51,7 @@ func NewTestValues() map[string]interface{} {
 		"float64Val": float64(3.14),
 		"dateVal":    time.Now().Truncate(time.Second),
 		"structVal":  NewTestStruct(),
-	}	
+	}
 }
 
 func putValues(t *testing.T, currentSession session.Session, tests map[string]interface{}) {
@@ -70,7 +70,7 @@ func putValues(t *testing.T, currentSession session.Session, tests map[string]in
 func compareValues(t *testing.T, currentSession session.Session, tests map[string]interface{}) {
 	for key, wanted := range tests {
 		t.Logf("Getting key: %s", key)
-		
+
 		ptr := reflect.New(reflect.TypeOf(wanted))
 		err := currentSession.Get(key, ptr.Interface())
 		if err != nil {
@@ -86,7 +86,7 @@ func compareValues(t *testing.T, currentSession session.Session, tests map[strin
 func assertNoValues(t *testing.T, currentSession session.Session, tests map[string]interface{}) {
 	for key, wanted := range tests {
 		ptr := reflect.New(reflect.TypeOf(wanted))
-		err := currentSession.Get(key, ptr.Interface())	
+		err := currentSession.Get(key, ptr.Interface())
 		if err == nil {
 			t.Fatalf("Session: %s is not destroyed", currentSession.SessionID())
 		}
@@ -134,7 +134,6 @@ func TestTemp(t *testing.T) {
 	}
 }
 
-
 func TestSession(t *testing.T) {
 	SessManager, err := NewManager(t, 0, 0, "")
 	if err != nil {
@@ -173,13 +172,13 @@ func TestSession(t *testing.T) {
 	if err := SessManager.SessionClose(currentSession.SessionID()); err != nil {
 		t.Errorf("SessionClose() failed: %v", err)
 	}
-	
+
 	//destroying session
 	t.Logf("Destroying session: %s", sid)
 	if err := SessManager.SessionDestroy(sid); err != nil {
 		t.Errorf("SessManager.SessionDestroy() failed: %v", err)
 	}
-	
+
 	currentSession, err = SessManager.SessionStart(sid)
 	if err != nil {
 		t.Errorf("SessionStart() failed: %v", err)
@@ -191,12 +190,12 @@ func TestSession(t *testing.T) {
 
 // TestDestroyAllSessions creates a session, puts some data, destroys this session,
 // then tries to reopen and read from the session. If at leas one key is found, test fails.
-func TestDestroyAllSessions(t *testing.T) {	
+func TestDestroyAllSessions(t *testing.T) {
 	SessManager, err := NewManager(t, 0, 0, "")
 	if err != nil {
 		t.Fatalf("NewManager() failed: %v", err)
 	}
-	
+
 	//start new session
 	currentSession, err := SessManager.SessionStart("")
 	if err != nil {
@@ -208,7 +207,7 @@ func TestDestroyAllSessions(t *testing.T) {
 
 	tests := NewTestValues()
 	putValues(t, currentSession, tests)
-	
+
 	SessManager.DestroyAllSessions(os.Stderr, session.LOG_LEVEL_DEBUG)
 
 	currentSession, err = SessManager.SessionStart(sid)
@@ -221,7 +220,7 @@ func TestDestroyAllSessions(t *testing.T) {
 
 // TestLifeTime creates a session with a limited life time.
 // Then waiting for the time more than our life time.
-// After that SessionGC() is called. 
+// After that SessionGC() is called.
 // Then data is retrieved. The session should have been deleted by then.
 // The test fails if any key persists.
 func TestLifeTime(t *testing.T) {
@@ -230,7 +229,7 @@ func TestLifeTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() failed: %v", err)
 	}
-	
+
 	currentSession, err := SessManager.SessionStart("")
 	sid := currentSession.SessionID()
 	t.Logf("SessionID: %s", sid)
@@ -240,25 +239,25 @@ func TestLifeTime(t *testing.T) {
 	if err := SessManager.SessionClose(currentSession.SessionID()); err != nil {
 		t.Errorf("SessionClose() failed: %v", err)
 	}
-	
-	t.Logf("waiting %d seconds for session to be killed", life_time + 2)
-	time.Sleep(time.Duration(life_time) * time.Second)	
-	
+
+	t.Logf("waiting %d seconds for session to be killed", life_time+2)
+	time.Sleep(time.Duration(life_time) * time.Second)
+
 	SessManager.SessionGC(os.Stderr, session.LOG_LEVEL_DEBUG)
-		
+
 	currentSession, err = SessManager.SessionStart(sid)
 	if err != nil {
 		t.Errorf("SessionStart() failed: %v", err)
 	}
 	t.Logf("Trying to read from session")
-	assertNoValues(t, currentSession, tests)	
+	assertNoValues(t, currentSession, tests)
 	t.Logf("The session %s is destroyed", sid)
 }
 
 // TestIdleTime creates a session with a limited idle time.
 // Some values are put to session store, then retrieved, asserted they exist.
 // Then session data is not touched more then idle time.
-// After that SessionGC() is called. 
+// After that SessionGC() is called.
 // Then data is retrieved. The session should have been deleted by then.
 // The test fails if any key persists.
 func TestIdleTime(t *testing.T) {
@@ -267,7 +266,7 @@ func TestIdleTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() failed: %v", err)
 	}
-	
+
 	currentSession, err := SessManager.SessionStart("")
 	sid := currentSession.SessionID()
 	t.Logf("SessionID: %s", sid)
@@ -277,31 +276,31 @@ func TestIdleTime(t *testing.T) {
 	if err := SessManager.SessionClose(currentSession.SessionID()); err != nil {
 		t.Errorf("SessionClose() failed: %v", err)
 	}
-	
+
 	t.Logf("waiting %d seconds", idle_time/2)
-	time.Sleep(time.Duration(idle_time/2) * time.Second)	
-	SessManager.SessionGC(os.Stderr, session.LOG_LEVEL_DEBUG)	
-	//test reading
-	compareValues(t, currentSession, tests)	
-	
-	t.Logf("waiting %d seconds for session to be killed", idle_time + 2)
-	time.Sleep(time.Duration(idle_time) * time.Second)	
-	
+	time.Sleep(time.Duration(idle_time/2) * time.Second)
 	SessManager.SessionGC(os.Stderr, session.LOG_LEVEL_DEBUG)
-		
+	//test reading
+	compareValues(t, currentSession, tests)
+
+	t.Logf("waiting %d seconds for session to be killed", idle_time+2)
+	time.Sleep(time.Duration(idle_time) * time.Second)
+
+	SessManager.SessionGC(os.Stderr, session.LOG_LEVEL_DEBUG)
+
 	currentSession, err = SessManager.SessionStart(sid)
 	if err != nil {
 		t.Errorf("SessionStart() failed: %v", err)
 	}
 	t.Logf("Trying to read from session")
-	assertNoValues(t, currentSession, tests)	
+	assertNoValues(t, currentSession, tests)
 	t.Logf("The session %s is destroyed", sid)
 }
 
 // TestKillByTime creates a session with a fixed kill time set to Now() + X seconds and starts GC.
 // Some values are put to session store, then we wait some tome less then X, retrieve values, assert they exist.
 // Then we wait some more time to pass the fixed time.
-// After that SessionGC() is called. 
+// After that SessionGC() is called.
 // Then data is retrieved. The session should have been deleted by then.
 // The test fails if any key persists.
 func TestKillByTime(t *testing.T) {
@@ -311,15 +310,14 @@ func TestKillByTime(t *testing.T) {
 	m := tm2.Format("15:04:05")
 	t.Logf("Creating session manager and start GC at %s.", tm.Format("15:04:05"))
 	t.Logf("Expecting all sessions to be cleared in %d seconds at %s", in_sec, m)
-	
+
 	SessManager, err := NewManager(t, 0, 0, m)
 	if err != nil {
 		t.Fatalf("NewManager() failed: %v", err)
-	
-	
+
 	}
 	SessManager.StartGC(os.Stderr, session.LOG_LEVEL_DEBUG)
-	
+
 	currentSession, err := SessManager.SessionStart("")
 	sid := currentSession.SessionID()
 	t.Logf("SessionID: %s", sid)
@@ -329,21 +327,21 @@ func TestKillByTime(t *testing.T) {
 	if err := SessManager.SessionClose(currentSession.SessionID()); err != nil {
 		t.Errorf("SessionClose() failed: %v", err)
 	}
-	
+
 	t.Logf("waiting %d seconds", 1)
-	time.Sleep(time.Duration(1) * time.Second)	
+	time.Sleep(time.Duration(1) * time.Second)
 	//test reading
-	compareValues(t, currentSession, tests)	
-	
-	t.Logf("waiting %d seconds for session to be killed", in_sec + 2)
-	time.Sleep(time.Duration( in_sec + 2) * time.Second)	
-	
+	compareValues(t, currentSession, tests)
+
+	t.Logf("waiting %d seconds for session to be killed", in_sec+2)
+	time.Sleep(time.Duration(in_sec+2) * time.Second)
+
 	currentSession, err = SessManager.SessionStart(sid)
 	if err != nil {
 		t.Errorf("SessionStart() failed: %v", err)
 	}
 	t.Logf("Trying to read from session")
-	assertNoValues(t, currentSession, tests)	
+	assertNoValues(t, currentSession, tests)
 	t.Logf("The session %s is destroyed", sid)
 }
 
@@ -351,13 +349,13 @@ func TestKillByTime(t *testing.T) {
 func TestRestartGC(t *testing.T) {
 	var lt_sec int64 = 3 //idle time
 	t.Logf("Creating session manager with idle time: %d seconds", lt_sec)
-		
+
 	SessManager, err := NewManager(t, 0, lt_sec, "")
 	if err != nil {
 		t.Fatalf("NewManager() failed: %v", err)
 	}
 	SessManager.StartGC(os.Stderr, session.LOG_LEVEL_DEBUG)
-	
+
 	currentSession, err := SessManager.SessionStart("")
 	tests := NewTestValues()
 	putValues(t, currentSession, tests)
@@ -365,8 +363,8 @@ func TestRestartGC(t *testing.T) {
 		t.Errorf("SessionClose() failed: %v", err)
 	}
 	time.Sleep(time.Duration(1) * time.Second)
-	compareValues(t, currentSession, tests)		
-	
+	compareValues(t, currentSession, tests)
+
 	//reset the GC time
 	lt_sec = lt_sec * 2
 	t.Logf("Resetting the idle time to %d seconds", lt_sec)
@@ -374,10 +372,9 @@ func TestRestartGC(t *testing.T) {
 	SessManager.SetMaxIdleTime(lt_sec)
 	SessManager.StartGC(os.Stderr, session.LOG_LEVEL_DEBUG)
 
-	t.Logf("Waiting %d seconds", lt_sec + 2)
-	time.Sleep(time.Duration(lt_sec + 2) * time.Second)
+	t.Logf("Waiting %d seconds", lt_sec+2)
+	time.Sleep(time.Duration(lt_sec+2) * time.Second)
 	t.Logf("Trying to read from session")
-	assertNoValues(t, currentSession, tests)	
+	assertNoValues(t, currentSession, tests)
 	t.Logf("The session %s is destroyed", currentSession.SessionID())
-}	
-
+}
