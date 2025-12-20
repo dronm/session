@@ -2,8 +2,6 @@ module github.com/dronm/session/bereg
 
 go 1.24.3
 
-replace github.com/dronm/session => /home/andrey/go/session
-
 require (
 	github.com/dronm/session v0.0.0-20241229034133-011d93cace7e // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

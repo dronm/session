@@ -2,8 +2,6 @@ module github.com/dronm/session/pg
 
 go 1.21.3
 
-replace github.com/dronm/session => /home/andrey/go/session
-
 require (
 	github.com/dronm/session v0.0.0
 	github.com/jackc/pgx/v5 v5.5.3
